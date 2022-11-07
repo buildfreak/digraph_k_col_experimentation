@@ -2,6 +2,7 @@
 # -*- coding: utf-8 -*-
 
 import networkit as nk
+import undirected_colored_graph as und
 import math
 import random
 import sys
@@ -22,16 +23,26 @@ class coloredGraph:
         self.__not_lemma_valid = False
         self.__LLL_THRESHOLD = 0
         self.__maxoutdeg = max([self.__graph.degreeOut(i) for i in range(self.__graph.numberOfNodes())])
-        self.__maxindeg = max([self.__graph.degreeIn(i) for i in range(self.__graph.numberOfNodes())]) 
+        self.__maxindeg = max([self.__graph.degreeIn(i) for i in range(self.__graph.numberOfNodes())])
+        self.__nu_nodes = set()
+        self.__gammanu_nodes = set()
+        self.__recompute_status = [1 for i in range(self.__graph.numberOfNodes())]
 
     def reset(self):
         self.__colors = [DEFAULT_NULL_COLOR for i in range(self.__graph.numberOfNodes())]
         self.__payoff = [DEFAULT_PAYOFF for i in range(self.__graph.numberOfNodes())]
         self.__LLL_THRESHOLD = 0
         self.__not_lemma_valid = False
+        self.__nu_nodes = set()
+        self.__gammanu_nodes = set()
+        self.__recompute_status = [1 for i in range(self.__graph.numberOfNodes())]
        
     def getGraph(self):
         return self.__graph
+    def getOrder(self):
+        return self.__graph.numberOfNodes()
+    def getSize(self):
+        return self.__graph.numberOfEdges()
     def getColors(self):
         return self.__colors
     def getPayoffs(self):
@@ -61,6 +72,27 @@ class coloredGraph:
         for n in self.__graph.iterNeighbors(vertex):
             if self.__colors[vertex] != self.__colors[n]:
                     self.__payoff[vertex]+=1;        
+
+    def getNEUnhappyVertex(self):
+        unhappy_node = random.choice(list(self.__nu_nodes))
+        self.__nu_nodes.remove(unhappy_node)
+        return unhappy_node
+        # return self.__nu_nodes.pop()
+
+    def getGammaUnhappyVertex(self):
+        unhappy_node = random.choice(list(self.__gammanu_nodes))
+        self.__gammanu_nodes.remove(unhappy_node)
+        return unhappy_node
+        # return self.__gammanu_nodes.pop()
+
+    def lenNUNodes(self):
+        return len(self.__nu_nodes)
+
+    def lenGammaUNodes(self):
+        return len(self.__gammanu_nodes)
+
+    def resetNodesStatus(self):
+        self.__recompute_status = [1 for i in range(self.__graph.numberOfNodes())]
 
     def colored(self):
         return self.__getFirstNonColoredVertex()==NULL_VERTEX;
@@ -94,7 +126,7 @@ class coloredGraph:
         is_NE = True;
         is_gamma_NE = True;
         for i in range(self.__graph.numberOfNodes()):
-            if self.__graph.degreeOut(i)==0:
+            if self.__graph.degreeOut(i)==0 or (self.__graph.degreeOut(i)==1 and self.__graph.degreeIn(i)==0):
                 continue; 
             min_freq_NE, cset_NE = self.__isVertexNEUnhappy(i);
             min_freq_gamma_NE, cset_gamma_NE = self.__isVertexGammaNEUnhappy(i);
@@ -125,26 +157,88 @@ class coloredGraph:
                 assert self.__colors[i] not in cset_NE;
                 assert (self.__graph.degreeOut(i) - min_freq_NE) >= self.__payoff[i];
 
-        if global_gamma==1 and is_gamma_NE==False:
+        if global_gamma == 1 and is_gamma_NE==False:
             raise Exception('mismatch gamma vs gamma_nash')
-        if global_gamma>1 and is_gamma_NE==True:
+        if global_gamma > 1 and is_gamma_NE==True:
             raise Exception('mismatch gamma vs gamma_nash')
         assert num_unhappy_gamma_NE/self.__graph.numberOfNodes()>=0 and num_unhappy_gamma_NE/self.__graph.numberOfNodes()<=1
 
         if global_gamma == 1 and is_NE == False:
             for i in range(self.__graph.numberOfNodes()):
-                if self.__graph.degreeOut(i)==0:
+                if self.__graph.degreeOut(i)==0 or (self.__graph.degreeOut(i)==1 and self.__graph.degreeIn(i)==0):
                     continue;
                 assert(self.__payoff[i] != DEFAULT_PAYOFF);
                 global_gamma = max((self.__graph.degreeOut(i) - min_freq_NE)/self.__payoff[i],global_gamma)
 
-        return global_gamma, is_NE,(num_unhappy_NE/self.__graph.numberOfNodes()), \
-                is_gamma_NE,(num_unhappy_gamma_NE/self.__graph.numberOfNodes());
+        if global_gamma > 10000:
+            self.__computePayoffs()
+            for v in self.__graph.iterNodes():
+                if self.__graph.degreeOut(v)==0 or (self.__graph.degreeOut(v)==1 and self.__graph.degreeIn(v)==0):
+                    continue;
+                if self.__payoff[i] == DEFAULT_PAYOFF:
+                    for nei in self.__graph.iterNeighbors(v):
+                        if self.__colors[v] != self.__colors[nei]:
+                            raise Exception('Incoerente')
+
+        return global_gamma, is_NE, (num_unhappy_NE/self.__graph.numberOfNodes()), \
+                is_gamma_NE, (num_unhappy_gamma_NE/self.__graph.numberOfNodes());
      
-    
+
+    def efficientNashStatus(self):
+        global_gamma = 1.0
+
+        for i in range(self.__graph.numberOfNodes()):
+            if self.__recompute_status[i] == 0:
+                continue
+            self.__recompute_status[i] = 0
+            if self.__graph.degreeOut(i) == 0 or (self.__graph.degreeOut(i) == 1 and self.__graph.degreeIn(i) == 0):
+                continue;
+            min_freq_NE, cset_NE = self.__isVertexNEUnhappy(i)
+            min_freq_gamma_NE, cset_gamma_NE = self.__isVertexGammaNEUnhappy(i)
+            if min_freq_gamma_NE != NULL_VERTEX:
+                self.__gammanu_nodes.add(i)
+                if self.__payoff[i] == DEFAULT_PAYOFF:  # all neighbors have same color of i
+                    global_gamma = sys.maxsize  # default infinite gamma
+                else:
+                    assert (self.__graph.degreeOut(i) - min_freq_gamma_NE) / self.__payoff[i] >= 1.0
+                    global_gamma = max((self.__graph.degreeOut(i) - min_freq_gamma_NE) / self.__payoff[i],
+                                       global_gamma)
+            elif i in self.__gammanu_nodes:
+                self.__gammanu_nodes.remove(i)
+
+            if min_freq_NE != NULL_VERTEX:
+                self.__nu_nodes.add(i)
+            elif i in self.__nu_nodes:
+                self.__nu_nodes.remove(i)
+        for i in list(self.__gammanu_nodes):
+            min_freq_gamma_NE, cset_gamma_NE = self.__isVertexGammaNEUnhappy(i)
+            if self.__payoff[i] == DEFAULT_PAYOFF:  # all neighbors have same color of i
+                global_gamma = sys.maxsize  # default infinite gamma
+            else:
+                assert (self.__graph.degreeOut(i) - min_freq_gamma_NE) / self.__payoff[i] >= 1.0
+                global_gamma = max((self.__graph.degreeOut(i) - min_freq_gamma_NE) / self.__payoff[i],
+                                   global_gamma)
+        if global_gamma == 1 and len(self.__gammanu_nodes) > 0:
+            raise Exception('mismatch gamma vs gamma_nash')
+        if global_gamma > 1 and len(self.__gammanu_nodes) == 0:
+            raise Exception('mismatch gamma vs gamma_nash')
+        assert len(self.__gammanu_nodes) / self.__graph.numberOfNodes() >= 0 and \
+               len(self.__gammanu_nodes) / self.__graph.numberOfNodes() <= 1
+
+        if global_gamma == 1 and len(self.__nu_nodes) > 0:
+            for i in range(self.__graph.numberOfNodes()):
+                if self.__graph.degreeOut(i) == 0 or (self.__graph.degreeOut(i) == 1 and self.__graph.degreeIn(i) == 0):
+                    continue;
+                assert(self.__payoff[i] != DEFAULT_PAYOFF);
+                global_gamma = max((self.__graph.degreeOut(i) - min_freq_NE)/self.__payoff[i], global_gamma)
+
+        return global_gamma, len(self.__nu_nodes) == 0, (len(self.__nu_nodes)/self.__graph.numberOfNodes()), \
+                len(self.__gammanu_nodes) == 0, (len(self.__gammanu_nodes)/self.__graph.numberOfNodes());
+
+
     def __isVertexNEUnhappy(self,vertex):
         #returns pair min_frequency, colorset (reason of unhappiness, or null)
-        if self.__graph.degreeOut(vertex)==0:
+        if self.__graph.degreeOut(vertex) == 0 or (self.__graph.degreeOut(vertex) == 1 and self.__graph.degreeIn(vertex) == 0):
             #outdegree null, always happy
             return [NULL_VERTEX,[]]; 
 
@@ -156,11 +250,13 @@ class coloredGraph:
         
         return [NULL_VERTEX,[]]; 
 
+
     def __isVertexGammaNEUnhappy(self,vertex):
         #returns pair min_frequency, colorset (reason of unhappiness, or null)
-        if self.__graph.degreeOut(vertex)==0:
-            #outdegree null, always happy
-            return [NULL_VERTEX,[]]; 
+        if self.__graph.degreeOut(vertex) == 0 or (
+                self.__graph.degreeOut(vertex) == 1 and self.__graph.degreeIn(vertex) == 0):
+            # outdegree null, always happy
+            return [NULL_VERTEX, []];
 
         assert self.__colors[vertex]!=DEFAULT_NULL_COLOR
         min_freq, colorset = self.__colorsWithMinimumFrequencyInNeighborhood(vertex)
@@ -173,7 +269,7 @@ class coloredGraph:
 
     def randomColoring(self):
         self.__colors = [random.choice(self.__available) for i in range(self.__graph.numberOfNodes())];
-        self.__computePayoffs();  
+        self.__computePayoffs();
 
     def __getRandomNEUnhappyVertex(self):
         #random triple unhappy vertex and reason if any (minfrequency and colorset) or null
@@ -182,14 +278,36 @@ class coloredGraph:
             mfeq,colset = self.__isVertexNEUnhappy(i)
             if mfeq != NULL_VERTEX:
                 unhappy_vertices.append([i,mfeq,colset])
-                
+
         if len(unhappy_vertices)==0:
             # assert self.isGammaNash(1)
-            return [NULL_VERTEX,NULL_VERTEX,[]]; #no unhappy in the graph  
-        
+            return [NULL_VERTEX,NULL_VERTEX,[]]; #no unhappy in the graph
+
         #RANDOMLY ONE OF THE AVAILABLE UNHAPPY VERTICES
         return random.choice(unhappy_vertices), len(unhappy_vertices);
-    
+
+    def getNEUnhappyVertexInfos(self, i):
+        mfeq, colset = self.__isVertexNEUnhappy(i)
+        assert len(colset) > 0
+        return i, mfeq, colset
+
+    def getGammaUnhappyVertexInfos(self, i):
+        mfeq, colset = self.__isVertexGammaNEUnhappy(i)
+        return i, mfeq, colset
+
+    def getNEUnhappyVertices(self):
+        unhappy_vertices = []
+        for i in range(self.__graph.numberOfNodes()):
+            mfeq, colset = self.__isVertexNEUnhappy(i)
+            if mfeq != NULL_VERTEX:
+                unhappy_vertices.append([i, mfeq, colset])
+
+        if len(unhappy_vertices) == 0:
+            # assert self.isGammaNash(1)
+            return []  # no unhappy in the graph
+
+        # RANDOMLY ONE OF THE AVAILABLE UNHAPPY VERTICES
+        return unhappy_vertices
 
     def __getRandomGammaUnhappyVertex(self):
         #random triple unhappy vertex and reason if any (minfrequency and colorset) or null
@@ -239,9 +357,30 @@ class coloredGraph:
         
         if __debug__:
             #TEST IMPROVEMENT
-            assert self.__payoff[vertex_to_change]==(self.__graph.degreeOut(vertex_to_change)-minimumfrequency)
+            assert self.__payoff[vertex_to_change] == (self.__graph.degreeOut(vertex_to_change)-minimumfrequency)
             assert old_payoff <= self.__payoff[vertex_to_change]
 
+    def improve_vertex(self, v_infos):
+
+        # CHANGE RANDOMLY ONE OF THE AVAILABLE UNHAPPY VERTICES
+        vertex_to_change, minimumfrequency, colorset = v_infos
+        if __debug__:
+            assert self.__isVertexNEUnhappy(vertex_to_change)[0] != NULL_VERTEX
+            assert self.__colors[vertex_to_change] not in colorset
+            old_payoff = self.__payoff[vertex_to_change]
+
+        self.__colors[vertex_to_change] = random.choice(colorset)
+        # self.__computePayoffs()
+        for n in self.__graph.iterInNeighbors(vertex_to_change):
+            self.__updatePayoff(n)
+            self.__recompute_status[n] = 1
+        self.__updatePayoff(vertex_to_change)
+        self.__recompute_status[vertex_to_change] = 1
+
+        if __debug__:
+            # TEST IMPROVEMENT
+            assert self.__payoff[vertex_to_change] == (self.__graph.degreeOut(vertex_to_change) - minimumfrequency)
+            assert old_payoff <= self.__payoff[vertex_to_change]
 
     def getAverageGamma(self):
         sum_gamma = 0.0;
@@ -315,8 +454,8 @@ class coloredGraph:
         return first_term+max_global_term    
 
     def __findConst(self):
-        bound = math.log(self.__maxoutdeg)+math.log(self.__maxindeg);
-        print("LOG(maxoutdeg)+LOG(maxindeg):",bound)
+        bound = math.log(self.__maxoutdeg)+math.log(self.__maxindeg)
+        print("LOG(maxoutdeg)+LOG(maxindeg):", bound)
         costants = []
         
         for i in range(self.__graph.numberOfNodes()):
@@ -326,11 +465,11 @@ class coloredGraph:
             
         return min(costants)
     
-    def LLLColoring(self,MAX_ITERATIONS):
+    def LLLColoring(self, MAX_ITERATIONS):
         
-        self.__colors = [random.choice(self.__available) for i in range(self.__graph.numberOfNodes())];
-        self.__computePayoffs();  
-        self.__LLL_THRESHOLD = self.computeLLLThreshold();
+        self.__colors = [random.choice(self.__available) for i in range(self.__graph.numberOfNodes())]
+        self.__computePayoffs()
+        self.__LLL_THRESHOLD = self.computeLLLThreshold()
         
         print("LLL_T:",self.__LLL_THRESHOLD)
         unhappy_trend = []
@@ -342,8 +481,8 @@ class coloredGraph:
 
         while unhappy[0]!=NULL_VERTEX and gamma_value>self.__LLL_THRESHOLD and itrs<MAX_ITERATIONS \
             and is_gamma_NE == False:
-            self.__resampling(unhappy[0]);
-            self.__computePayoffs();  
+            self.__resampling(unhappy[0])
+            self.__computePayoffs()
             bar.next()
             unhappy, num_unhappy = self.__getRandomGammaUnhappyVertex()
             unhappy_trend.append(num_unhappy/self.__graph.numberOfNodes())
@@ -353,9 +492,8 @@ class coloredGraph:
         bar.finish()
         
         return itrs, unhappy_trend
-    
 
-    def __resampling(self,vertex):
+    def __resampling(self, vertex):
         vertices_to_recolor = set()
         for nodo in self.__graph.iterNeighbors(vertex):
             
@@ -381,7 +519,40 @@ class coloredGraph:
                 
         for v in vertices_to_recolor:
             self.__colors[v] = random.choice(self.__available)
-    
+
+    def efficientResampling(self, vertex):
+        vertices_to_recolor = set()
+        for nodo in self.__graph.iterNeighbors(vertex):
+            # The events in which v’s neighbours are involved in their neighbours’ unhappiness
+            for altronodo in self.__graph.iterInNeighbors(nodo):
+                mfeq, colset = self.__isVertexGammaNEUnhappy(altronodo)
+                if mfeq != NULL_VERTEX:
+                    # vertices_to_recolor.add(altronodo)
+                    vertices_to_recolor.add(nodo)
+
+                    # The events I_w, for any w != v, that make w unhappy, namely there exists a directed edge (v,w)
+        for nodo in self.__graph.iterNeighbors(vertex):
+            mfeq, colset = self.__isVertexGammaNEUnhappy(nodo)
+            if mfeq != NULL_VERTEX:  # infelice
+                vertices_to_recolor.add(nodo)
+
+        # The events I_w, for any w != v where v contributes to w′s unhappiness, namely there exists a directed edge
+        # (w,v) (<= \delta(v_i) )
+        for nodo in self.__graph.iterInNeighbors(vertex):
+            mfeq, colset = self.__isVertexGammaNEUnhappy(nodo)
+            if mfeq != NULL_VERTEX:  # infelice
+                vertices_to_recolor.add(nodo)
+
+        for v in vertices_to_recolor:
+            self.__colors[v] = random.choice(self.__available)
+            self.__recompute_status[v] = 1
+            self.__updatePayoff(v)
+            for neig in self.__graph.iterInNeighbors(v):
+                self.__recompute_status[neig] = 1
+                self.__updatePayoff(neig)
+
+        self.__recompute_status[vertex] = 1
+        self.__updatePayoff(vertex)
 
     def Approx1(self):
         v = self.__getFirstNonColoredVertex();
@@ -476,4 +647,65 @@ class coloredGraph:
                 self.__colors[vertex] = color_to_use;
                 counter=(counter+1)%2;
                 color_to_use = cols[counter];
-                  
+
+    def Approx3(self, epsilon):
+
+        kprime = math.ceil((3 * (1 + epsilon)) / epsilon)
+        print("== KPRIME: " + str(kprime))
+        # print("KPRIME: ",kprime)
+
+        i = 1;
+        bar = IncrementalBar('Coloring True Vertices:', max=self.__graph.numberOfNodes())
+        # vprime is vertex set of graph_prime
+        graph_prime = nk.graph.Graph(self.__graph.numberOfNodes(), weighted=False, directed=True)
+        present_prime = [True for i in range(graph_prime.numberOfNodes())]
+        # print(self.__available)
+        while present_prime.count(True) > 0:
+
+            # print("iteration: ",str(i))
+
+            # color_indices=[((i-1)*kprime)+j for j in range(kprime) if ((i-1)*kprime)+j<len(self.__available)]
+
+            usd = self.__listOfUsedColors();
+            # print("CURRENTLY USED: ",usd)
+            available_colors = [el for el in self.__available if el not in usd];
+
+            if len(available_colors) > kprime:
+                new_colors = [random.choice(available_colors) for i in range(kprime)];
+            else:
+                new_colors = available_colors;
+            # print("USED INDICES:",color_indices)
+            # print("REMAINING VERTICES:",len(Vprime))
+            # print("ATTEMPTED COLORS:",new_colors)
+
+            # indexOf = {}
+            # for vtx in Vprime:
+            #     indexOf[vtx] = Vprime.index(vtx)
+            assert graph_prime.numberOfEdges() == 0;
+            for u, v in self.__graph.iterEdges():
+                if present_prime[u] == True:
+                    if present_prime[v] == True:
+                        graph_prime.addEdge(u, v);
+
+            und_graph_prime = graphtools.toUndirected(graph_prime)
+            # print("HERE 1")
+            if und_graph_prime.isDirected() == True:
+                raise Exception('DIRECTED GRAPH!')
+            # print("HERE 2")
+
+            colored_und_graph_prime = und.undColoredGraph(und_graph_prime, new_colors)
+
+            colored_und_graph_prime.undirectedKColoring()
+            for vertex in range(graph_prime.numberOfNodes()):
+                if present_prime[vertex]:
+                    if graph_prime.degreeOut(vertex) >= math.ceil(und_graph_prime.degree(vertex) / 3):
+                        self.__colors[vertex] = colored_und_graph_prime.colors[vertex];
+                        bar.next()
+                        present_prime[vertex] = False;
+            i += 1;
+            graph_prime.removeAllEdges();
+            bar.next()
+        bar.finish()
+        if self.numberOfUsedColors() > round((6 * (1 + epsilon)) / epsilon) * math.log2(self.__graph.numberOfNodes()):
+            raise Exception('Too many colors used')
+        self.__computePayoffs();
